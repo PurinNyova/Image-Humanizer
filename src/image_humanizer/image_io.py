@@ -37,6 +37,9 @@ def load_canon_config(path: Path) -> CanonConfig:
     splits = {k: float(v) for k, v in raw["splits"].items()}
     if abs(sum(splits.values()) - 1.0) > 1e-9:
         raise ValueError(f"split fractions must sum to 1.0, got {sum(splits.values())}")
+    parent_max_fraction = float(raw["grouping"].get("parent_max_fraction", 0.2))
+    if not 0.0 <= parent_max_fraction <= 1.0:
+        raise ValueError(f"parent_max_fraction must be in [0, 1], got {parent_max_fraction}")
     return CanonConfig(
         canon_version=str(raw["canon_version"]),
         resolution=int(raw["resolution"]),
@@ -44,7 +47,7 @@ def load_canon_config(path: Path) -> CanonConfig:
         resize_filter=str(raw["resize_filter"]),
         skip_resize_if_square=bool(raw["skip_resize_if_square"]),
         phash_max_distance=int(raw["grouping"]["phash_max_distance"]),
-        parent_max_fraction=float(raw["grouping"].get("parent_max_fraction", 0.2)),
+        parent_max_fraction=parent_max_fraction,
         splits=splits,
     )
 
@@ -75,12 +78,25 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _to_srgb(im: Image.Image) -> tuple[Image.Image, bool]:
+def _to_srgb(path: Path, im: Image.Image) -> tuple[Image.Image, bool]:
+    if im.mode in {"I", "F"} or im.mode.startswith("I;16"):
+        # Pillow's convert() clips these to 8 bits silently; refuse instead.
+        raise ValueError(
+            f"{path}: {im.mode} high-bit grayscale is unsupported; "
+            "normalize it to 8-bit L before ingest"
+        )
     icc = im.info.get("icc_profile")
     if icc is not None:
         src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
         dst = ImageCms.createProfile("sRGB")
+        if im.mode in {"RGBA", "LA"}:
+            # LA cannot be transformed directly; move luminance to RGB, keep alpha.
+            alpha = im.getchannel("A")
+            rgb = ImageCms.profileToProfile(im.convert("RGB"), src, dst, outputMode="RGB")
+            return Image.merge("RGBA", (*rgb.split(), alpha)), True
         return ImageCms.profileToProfile(im, src, dst, outputMode="RGB"), True
+    if im.info.get("transparency") is not None and im.mode in {"P", "RGB"}:
+        return im.convert("RGBA"), True
     if im.mode not in {"RGB", "RGBA", "L", "LA"}:
         return im.convert("RGB"), True
     if im.mode == "L":
@@ -126,11 +142,11 @@ def canonicalize(path: Path, cfg: CanonConfig) -> Canonical:
         if exif_oriented.mode == "CMYK":
             # Pillow's CMYK->RGB is a blind guess; refuse rather than guess.
             if exif_oriented.info.get("icc_profile"):
-                exif_oriented, icc_converted = _to_srgb(exif_oriented)
+                exif_oriented, icc_converted = _to_srgb(path, exif_oriented)
             else:
                 raise ValueError(f"{path}: CMYK without an ICC profile, refusing to guess the conversion")
         else:
-            exif_oriented, icc_converted = _to_srgb(exif_oriented)
+            exif_oriented, icc_converted = _to_srgb(path, exif_oriented)
         composited = False
         if exif_oriented.mode in {"RGBA", "LA"}:
             exif_oriented = _composite_over_white(exif_oriented, cfg.alpha_background)
@@ -169,6 +185,13 @@ def canonicalize(path: Path, cfg: CanonConfig) -> Canonical:
 
 def iter_source_files(root: Path) -> list[Path]:
     return sorted(p for p in Path(root).rglob("*") if p.suffix.lower() in _IMAGE_SUFFIXES and p.is_file())
+
+
+def load_png(path: Path) -> torch.Tensor:
+    """Inverse of save_png: 3 x H x W float32 in [0, 1]."""
+    with Image.open(path) as im:
+        arr = np.asarray(im.convert("RGB"), dtype=np.uint8)
+    return torch.from_numpy(np.ascontiguousarray(arr.transpose(2, 0, 1))).float().div_(255.0)
 
 
 def save_png(tensor: torch.Tensor, path: Path) -> None:

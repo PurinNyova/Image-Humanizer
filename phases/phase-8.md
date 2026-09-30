@@ -1,39 +1,32 @@
-## Phase 8: Dataset Loader and Balanced Sampling
+## Phase 8: Residual Pixel-Space U-Net
 
-**Goal:** Expose cached reconstructions as balanced pixel-space training pairs.
+**Goal:** Map a VAE reconstruction to the clean original in pixel space.
 
-Each sample returns:
+**Build:** One residual 4-level convolutional U-Net in `model.py`.
 
 ```text
-watermarked: VAE reconstruction
-original: clean target
-vae_name: evaluation and sampling metadata
-group_id: source group identity
+3ch RGB → Conv3x3 stem (64ch)
+→ levels [64, 128, 256, 512]: 2× (GroupNorm → SiLU → Conv3x3) per level
+→ downsample (stride-2 conv) between levels, upsample (bilinear + Conv3x3) on return
+→ skip connections
+→ Conv3x3 → zero-init (3ch)
+→ add input
 ```
 
-Sampling strategy:
+Widths and multipliers come from `configs/train.toml` (`base_width = 64`, `channel_multipliers = [1, 2, 4, 8]`). GroupNorm uses 8 groups. Forward returns the corrected pixels directly, no clamping.
 
-1. Choose a VAE family uniformly.
-2. Choose a valid original uniformly for that VAE.
-3. Load the reconstruction and clean target.
+**Rules:**
 
-This avoids accidental dominance caused by failed groups, duplicate rows, or unequal availability.
+- Input and output are RGB float32 tensors with identical geometry.
+- Reflect-pad H and W up to a multiple of 8, run the net, crop back to the original size.
+- Zero-initialize the 3-channel residual head so the first forward is the identity map.
+- Forward returns unclamped corrected pixels; clamping happens at inference only.
+- No attention, no conditioning, no pretrained encoders, no model registry, no config class, no factory, no second architecture.
 
-Training augmentation must preserve alignment:
+**Tests** (`tests/test_model.py`):
 
-- Apply the same crop and flip to input and target.
-- Avoid independent color augmentation.
-- Avoid arbitrary color augmentation that changes the clean target relationship.
-- Keep validation and test deterministic.
+- Identity initialization: `model(x) == x` for random `x` at init.
+- Odd-size geometry: `x` of shape `(2, 3, 37, 53)` returns exactly that shape.
+- One synthetic optimization step: a single AdamW step on a fixed pair lowers the Charbonnier loss. The test inlines it as `torch.sqrt((model(x) - y) ** 2 + 1e-6).mean()` — no losses module, no helper, nothing to import. Phase 9 owns the production objective.
 
-Do not load all ten reconstructions in every baseline batch. Group batches are only needed if group consistency is later enabled.
-
-**Tests:**
-
-- Input and target remain aligned.
-- Split boundaries are respected.
-- Sampling frequencies are approximately uniform.
-- Corrupt or incomplete groups fail clearly.
-- Every training pair uses decoded pixels, not latent tensors.
-
-**Exit criterion:** The loader produces balanced, aligned batches without loading any VAE.
+**Done:** `model.py` defines one class, tests pass, no VAE import anywhere in the path.

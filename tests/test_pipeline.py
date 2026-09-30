@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import json
 from pathlib import Path
 
@@ -111,17 +110,30 @@ def test_icc_converted_to_srgb(tmp_path):
     assert with_icc.source_id == without.source_id
 
 
-def test_alpha_composites_over_white_never_drops(tmp_path):
+def test_alpha_composites_over_configured_matte_never_drops(tmp_path):
+    # Transparent colored pixel must become alpha_background (here green), not white.
+    with_green = CanonConfig(**{**vars(cfg()), "alpha_background": (0.0, 1.0, 0.0)})
     rgba = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     for x in range(0, 64, 8):
         for y in range(0, 64, 8):
             rgba.putpixel((x, y), (255, 0, 0, 255))
-    canon = canonicalize(_save(rgba, tmp_path / "a.png"), cfg())
+    canon = canonicalize(_save(rgba, tmp_path / "a.png"), with_green)
     assert canon.composited
     t = canon.tensor
     assert bool(t[0, 0, 0] > 0.5)  # opaque red survives
     assert bool(t[2, 0, 0] < 0.5)
-    assert bool((t[:, 3, 3] > 0.99).all())  # transparent becomes the white matte
+    assert bool(t[1, 3, 3] > 0.99)  # transparent pixel -> configured matte channel
+    assert bool(t[0, 3, 3] < 0.01)
+
+
+def test_palette_transparency_promotes_to_rgba(tmp_path):
+    # P-mode with palette transparency: the _to_srgb transparency branch must fire
+    # (composited=True proves the promote-to-RGBA happened; an opaque P image
+    # would only convert to RGB).
+    pal = _array(64, 64, seed=5).convert("P")
+    pal.info["transparency"] = pal.getpixel((0, 0))
+    canon = canonicalize(_save(pal, tmp_path / "p.png"), cfg())
+    assert canon.composited
 
 
 def test_grayscale_is_converted_explicitly(tmp_path):
@@ -131,18 +143,41 @@ def test_grayscale_is_converted_explicitly(tmp_path):
     assert torch.equal(canon.tensor[0], canon.tensor[1]) and torch.equal(canon.tensor[1], canon.tensor[2])
 
 
-def test_cmyk_never_falls_back_to_a_blind_conversion(tmp_path):
-    # LittleCMS cannot build a CMYK transform without a real CMYK profile, and
-    # PIL's implicit CMYK->RGB is a guess. Both must fail, not silently convert.
+def test_high_bit_gray_is_refused(tmp_path):
+    # 16-bit grayscale: Pillow's convert() would clip it to 8 bits silently.
+    path = _save(Image.fromarray(np.full((64, 64), 65535, np.uint16)), tmp_path / "hi.tif")
+    with pytest.raises(ValueError, match="unsupported"):
+        canonicalize(path, cfg())
+
+
+def test_config_rejects_splits_that_do_not_sum_to_one(tmp_path):
+    path = tmp_path / "preprocess.toml"
+    path.write_text(
+        'canon_version = "1"\n'
+        "resolution = 64\n"
+        "alpha_background = [1.0, 1.0, 1.0]\n"
+        "skip_resize_if_square = true\n"
+        'resize_filter = "lanczos"\n'
+        "[splits]\n"
+        "train = 0.5\n"
+        "validation = 0.4\n"  # 0.5 + 0.4 + 0.2 = 1.1
+        "test = 0.2\n"
+        "[grouping]\n"
+        "phash_max_distance = 6\n"
+        "parent_max_fraction = 0.2\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="sum to 1.0"):
+        load_canon_config(path)
+
+
+def test_cmyk_with_mismatched_profile_is_refused(tmp_path):
+    # LittleCMS cannot build a CMYK transform out of an sRGB profile; the
+    # mismatch must surface, not fall back to PIL's blind CMYK->RGB guess.
     profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
     cmyk = ImageCms.Image.frombytes("CMYK", (64, 64), bytes([10, 200, 30, 5]) * (64 * 64))
-    mismatched = _save(cmyk, tmp_path / "mismatched.tif", icc_profile=profile)
     with pytest.raises(ImageCms.PyCMSError):
-        canonicalize(mismatched, cfg())
-
-    unprofiled = _save(cmyk, tmp_path / "plain.tif")
-    with pytest.raises(ValueError, match="refusing to guess"):
-        canonicalize(unprofiled, cfg())
+        canonicalize(_save(cmyk, tmp_path / "mismatched.tif", icc_profile=profile), cfg())
 
 
 def test_cmyk_without_profile_is_refused(tmp_path):
@@ -232,16 +267,27 @@ def test_split_is_stable_across_input_order_and_runs(tmp_path):
 def test_frozen_splits_file_is_reused_and_refuses_drift(tmp_path):
     srcs = _sources(tmp_path, [(f"i{i}.png", _array(64, 64, seed=300 + i)) for i in range(20)])
     assign_groups(srcs, tmp_path, cfg())
-    frozen = freeze_splits(srcs, tmp_path / "out", cfg())
+    frozen = freeze_splits(srcs, tmp_path / "out", tmp_path, cfg())
     assert (tmp_path / "out" / "splits.json").is_file()
-    again = freeze_splits(srcs, tmp_path / "out", cfg())
+    # Keys are paths relative to input_root, not absolute.
+    assert all(not Path(k).is_absolute() for k in frozen.parent_to_split)
+    again = freeze_splits(srcs, tmp_path / "out", tmp_path, cfg())
     assert again.source_to_split == frozen.source_to_split
+    assert again.parent_to_split == frozen.parent_to_split
     with pytest.raises(ValueError, match="canon_version"):
-        freeze_splits(srcs, tmp_path / "out", CanonConfig(**{**vars(cfg()), "canon_version": "2"}))
+        freeze_splits(
+            srcs, tmp_path / "out", tmp_path, CanonConfig(**{**vars(cfg()), "canon_version": "2"})
+        )
     # A grown corpus must not silently inherit a stale freeze.
-    _sources(tmp_path, [(f"i{i}.png", _array(64, 64, seed=300 + i)) for i in range(20)] + [("new.png", _array(64, 64, seed=999))])
+    grown = srcs + _sources(tmp_path, [("new.png", _array(64, 64, seed=999))])
     with pytest.raises(ValueError, match="does not describe this corpus"):
-        freeze_splits(srcs + _sources(tmp_path, [("new.png", _array(64, 64, seed=999))]), tmp_path / "out", cfg())
+        freeze_splits(grown, tmp_path / "out", tmp_path, cfg())
+    # Re-splitting the same corpus with different group/parent mappings is refused.
+    remapped = CanonConfig(**{**vars(cfg()), "phash_max_distance": 0})
+    b = _sources(tmp_path, [(f"j{i}.png", _array(64, 64, seed=800 + i)) for i in range(4)])
+    assign_groups(b, tmp_path, remapped)
+    with pytest.raises(ValueError, match="does not describe this corpus"):
+        freeze_splits(b, tmp_path / "out", tmp_path, remapped)
 
 
 def test_split_ratios_land_where_configured(tmp_path):

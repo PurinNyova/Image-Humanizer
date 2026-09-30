@@ -1,7 +1,10 @@
 # Phase 0 — Decision Record
 
 Every decision below is binding on later phases. Rationale is one line; the
-evidence is in `phase0_checkpoints.md`.
+evidence is in `phase0_checkpoints.md`. Where a decision has an implementation,
+`configs/preprocess.toml` and `configs/vae_registry.toml` are the authoritative
+form of it and the code reads them; this record is the reasoning, not a second
+source of truth.
 
 ---
 
@@ -9,14 +12,15 @@ evidence is in `phase0_checkpoints.md`.
 
 **`512 × 512`.**
 
-Every VAE in the inventory divides 512 by its spatial compression: 8 (sd15, sdxl,
-flux, chroma, sd3, qwen_image, wan), 16 (wan2.2 — not selected), 32 (hunyuan,
-ltx). 512 is a common multiple of 8, 16, and 32, so a single canonical tensor
-feeds all ten adapters without padding disagreement.
+Every family in the registry divides 512 by its declared `spatial_multiple`: 8
+(qwen_image, sdxl, flux, chroma, sd15, sd3, wan), 16 (minimax_h3_image —
+registered but `enabled = false`), 32 (hunyuan, ltx). 512 is a common multiple of
+8, 16, and 32, so a single canonical tensor feeds reconstruction for every
+family without padding disagreement.
 
-Phase 7 requires "give every adapter the same canonical target tensor" and to
-"fail instead of interpolating mismatched reconstruction dimensions". 512 is what
-makes that trivially true.
+Reconstruction receives that tensor and must return identical geometry and "fail
+instead of interpolating mismatched reconstruction dimensions" (Phase 4). 512 is
+what makes that trivially true.
 
 ---
 
@@ -28,7 +32,11 @@ Order of operations, applied once per source:
    geometry is the displayed geometry.
 2. **sRGB conversion** — ICC profile applied via ImageCms; images with no ICC
    profile are assumed sRGB and passed through. CMYK and other non-RGB modes are
-   converted to RGB **explicitly**, never silently dropped.
+   converted to RGB **explicitly**, never silently dropped. Two cases are refused
+   rather than guessed, because both have a silent wrong answer: high-bit-depth
+   grayscale (`I`, `F`, `I;16`), which `convert()` would clip to 8 bits without
+   saying so, and CMYK with no ICC profile, which has no defensible automatic
+   conversion.
 3. **Alpha compositing** — over the configured background, default white
    `[1.0, 1.0, 1.0]`. Alpha is never dropped.
 4. **Represent as float32 RGB in `[0, 1]`**, NCHW.
@@ -51,8 +59,7 @@ one crop, before any VAE is touched.**
   downsampling; bicubic's ringing is itself a high-frequency artifact and would
   contaminate the watermark training signal.
 - Center crop, not random. Cropping is part of dataset identity, so it must be
-  deterministic. Random crops are an *augmentation* applied at training time
-  (Phase 8), identically to input and target.
+  deterministic.
 - **Exactly once.** Resizing twice (once to normalize, once to fit a VAE) is how
   resampling artifacts get mistaken for VAE artifacts.
 
@@ -62,20 +69,33 @@ Images already `512×512` skip the resize entirely.
 
 ## D4. Grouping keys for leakage-safe splitting
 
-Applied in this order; the first that produces a non-trivial grouping wins.
+**Union of every key — never a precedence order.** Each key below contributes,
+and two sources that share *any* key land in the same group, transitively. So one
+pair of burst frames can be held together by their shared folder while a third,
+matching image stored elsewhere is pulled in by pHash. The earlier rule — one key
+chosen per group, the remaining keys ignored — is withdrawn.
+`configs/preprocess.toml` records this as `grouping.strategy = "union_all_keys"`,
+and `dataset.assign_groups` builds one union-find over all of them.
 
-1. **Byte-identical** — identical file SHA-256.
-2. **Pixel-identical** — identical post-canonicalization tensor hash. Catches
-   the same image re-encoded as JPEG/PNG.
-3. **Perceptual near-duplicate** — pHash Hamming distance ≤ 6 within the same
-   pHash band. Catches crops, resizes, and mild re-compression.
-4. **Parent collection** — directory or archive-of-origin. Catches bursts,
-   video frames, and shot sequences that share a folder.
-5. **Fallback: `source_id` alone** as its own group.
+1. **Byte hash** — identical file SHA-256. Byte-identical copies are dropped
+   before they are ever decoded, and unioned again at grouping time.
+2. **Canonical source id** — pixel-identical sources (the same image re-encoded as
+   JPEG/PNG) hash to the same `source_id` under D6, so they are already one
+   source before grouping starts. Listed because it is a key, not because it
+   needs a separate pass.
+3. **Perceptual near-duplicate** — pHash Hamming distance ≤
+   `grouping.phash_max_distance` (6) between two sources that share a pHash band
+   (4 bands of 16 bits). Catches crops, resizes, and mild re-compression.
+4. **Parent directory** — directory relative to the input root, which catches
+   bursts, video frames, and shot sequences that share a folder. A directory
+   holding more than `grouping.parent_max_fraction` (0.2) of the corpus is
+   treated as a flat dump rather than a collection, so it is not used as a key.
 
-All crops and all ten VAE reconstructions from one source stay in one split.
-Splits are by group, never by generated pair — Phase 2 already states this; D4
-just names the keys.
+A group's id is the lexicographically smallest `source_id` in the component, so
+it never depends on scan order. Splits are assigned by group, never by generated
+pair: all crops and all reconstructions of one source stay in one split. A
+written `splits.json` is a promise — a `canon_version` mismatch or any difference
+in the source, group, or parent map aborts rather than silently re-splitting.
 
 ---
 
@@ -89,11 +109,12 @@ reconstruction error, and the model would learn to remove our noise instead of
 the VAE's signature. This is the one place where "just use fp16" is wrong.
 
 Cost: LTX at 512×512 with 128 latent channels and Hunyuan at 32× spatial
-compression are the memory risks. Both are handled by moving one adapter to GPU
-at a time, which Phase 7 already mandates.
+compression are the memory risks. Both are handled by keeping one VAE resident
+at a time, which Phase 6 already mandates.
 
-Mixed precision is permitted **for the U-Net in Phase 10**, after float32
-smoke tests pass.
+Training runs in fp32 — Phase 9 states "fp32 only" — and **no phase as written
+enables mixed precision.** Enable it only against a measured need (fp32
+throughput or memory failure), and record that measurement here first.
 
 ---
 
@@ -118,7 +139,7 @@ is mixed in so that a canonicalization change invalidates every id.
 | wan | video | `supported_single_frame` |
 | hunyuan | video | `supported_single_frame` |
 | ltx | video | `supported_single_frame` |
-| minimax_h3_image | video | **`UNSUPPORTED`** |
+| minimax_h3_image | video | `unsupported` (`enabled = false`) |
 
 An image-retrained checkpoint is preferred wherever one is authoritative and
 available. Research found **none** for Wan, Hunyuan, or LTX — Wan-AI,
@@ -128,14 +149,17 @@ its VAE is natively 2D and needs no fallback.
 **`minimax_h3_image` is deliberately unsupported.** Its config declares
 `clip_length: 17`, meaning it is trained on 17-frame clips. `T=1` is outside
 that regime, and unlike Wan/Hunyuan/LTX there is no documented single-frame
-path to fall back on. It stays in the registry as a *named, resolved* checkpoint
-that fails loudly, rather than being silently skipped or guessed at.
+path to fall back on. It stays in the registry as a *named, disabled* entry —
+`enabled = false` with an `unsupported_reason` — so `validate-vaes` reports one
+`unsupported` finding and pair generation skips it by name. Reported, never
+silently approximated, never deleted from the inventory.
 
 ---
 
 ## D8. Maximum acceptable clean-image drift
 
-Used for checkpoint selection in Phase 10 and as the safety gate in Phase 11.
+The evaluation gate in Phase 10: per-family metrics on the test split, with
+these limits holding for every family.
 
 **Hard limits on clean inputs:**
 
@@ -143,42 +167,41 @@ Used for checkpoint selection in Phase 10 and as the safety gate in Phase 11.
 |---|---|
 | `L1(model(clean), clean)` | ≤ `0.002` |
 | PSNR | ≥ `48 dB` |
-| SSIM | ≥ `0.995` |
-| Edge energy change | ≤ `1%` |
-| Pixels changed by > 1/255 | ≤ `0.5%` |
 
-**Selection rule:** equal-weight mean across the ten VAE families, subject to
-every one of these holding. A checkpoint that improves the mean while violating
-any clean limit on any single family is rejected.
+**Selection rule: the worst family decides.** Both limits hold for every
+enabled family and no mean is computed. A checkpoint that improves the average
+while breaking either limit on one family is rejected.
+
+SSIM, edge energy, and changed-pixel share are **withdrawn.** Phase 10 reports
+exactly paired L1/PSNR and clean-drift L1/PSNR — no metric battery, no SSIM, no
+edge reporting.
 
 Rationale for the numbers: a model that alters a clean image by more than ~0.2%
 mean absolute error is no longer "removing a watermark", it is "editing
 everything". These thresholds are deliberately strict; loosen them only with
-evidence from Phase 11, and record why.
+evidence from Phase 10, and record why.
+
+The limits live in `configs/preprocess.toml` (`[clean_drift]`) and are recorded
+here as the gate for reference generation and evaluation. No code reads those keys
+yet — they are pinned input, not a passing check.
 
 ---
 
 ## D9. Dependency pins
 
-From `uv.lock`, resolved 2026-09-30:
+`pyproject.toml` states the floors (`torch>=2.6`, `diffusers>=0.33`, and so on);
+**`uv.lock` is the authoritative record of what a run actually resolved.** Read
+the version from there. This document deliberately duplicates no version
+numbers, because a copied table is a table that goes stale silently.
 
-| Package | Version |
-|---|---|
-| `torch` | 2.14.0 |
-| `torchvision` | 0.29.0 |
-| `diffusers` | 0.40.0 |
-| `numpy` | 2.x |
-| `pillow` | 11.x |
-| `safetensors` | 0.5+ |
-| `transformers` | 4.x |
-| `accelerate` | 1.x |
-
-`diffusers==0.40.0` is load-bearing: it is the version verified to export
-`AutoencoderKLQwenImage`, `AutoencoderKLWan`, `AutoencoderKLHunyuanVideo`,
-`AutoencoderKLLTXVideo`, and `AutoencoderKLMiniMaxH3`, all with `enable_tiling`
-and `enable_slicing`. It does **not** export the deprecated
-`AutoencoderKLCausal3D` that Hunyuan's config declares — hence the required
-remap in Phase 6.
+What is load-bearing about `diffusers` is not a number but two class facts,
+verified by import against the version locked at the time of writing (0.40.0):
+it exports `AutoencoderKLQwenImage`, `AutoencoderKLWan`,
+`AutoencoderKLHunyuanVideo`, `AutoencoderKLLTXVideo`, `AutoencoderKLMiniMaxH3`,
+and `AutoencoderKL`, all with `enable_tiling` and `enable_slicing`; and it does
+**not** export the deprecated `AutoencoderKLCausal3D` that Hunyuan's config
+declares — hence the required remap at load time. Re-verify both facts whenever
+the lock moves; nothing in the codebase checks them for you.
 
 Re-lock only deliberately. A lockfile change invalidates every provenance record
 that includes a dependency hash.
@@ -202,14 +225,21 @@ Blocking, non-blocking, or restrictive per family:
 | ltx | LTX Open Weights 0.X | review before release |
 | minimax_h3_image | H3 Community | review before release |
 
-**Gated repos:** `flux` and `sd3` require `huggingface_hub login` before
-validation can hash their weights. This blocks their Phase 3 exit criterion
-until a token is present, and it is a licensing/access question, not a
-technical one.
+**Gated repos:** `flux` and `sd3` are gated on the Hub, and nothing in this
+project gets around that. `validate-vaes` resolves local files only: it never
+logs in, never opens a socket, and never downloads, and `hf_repo`/`hf_revision`
+are provenance citations that no code path reads. The operator accepts the
+upstream terms out of band and places the pinned files in
+`checkpoints/vae/<family>/` by hand.
+
+Until a real weight hash is known, the registry declares `sha256 = ""` for both
+entries. That is not a failure: resolution reports the file as **UNVERIFIED** in
+a deferred note. Filling in the true LFS hash is what upgrades the entry to
+enforced — the enforcement is the registry field, nothing else.
 
 **Derived-work note:** VAE reconstructions are outputs of these models. A model
-trained on SD3 reconstructions inherits a practical claim on them. Release
-artifacts in Phase 13 must state this explicitly.
+trained on SD3 reconstructions inherits a practical claim on them. Any released
+artifact must state this explicitly.
 
 ---
 
@@ -217,8 +247,9 @@ artifacts in Phase 13 must state this explicitly.
 
 | Item | Blocks | Resolution phase |
 |---|---|---|
-| HF token for `flux` + `sd3` | 3 (validation) | 3 |
-| `minimax_h3_image` `T=1` verification | 6, 7 | 6 |
-| Hunyuan `.pt` + deprecated class handling | 3, 6 | 3 |
+| Local weights for all 9 enabled families — registry pins them, operator places them | 5, 6 | manual, deliberate |
+| Gated fetch of `flux` + `sd3` (operator accepts upstream terms; no login in code) | 6 | manual, deliberate |
+| `minimax_h3_image` `T=1` verification | 6 | 6 |
+| Hunyuan `.pt` + deprecated class handling | — | closed: both declared in the registry, class remap happens at load |
 | Wan 2.2 `in_channels: 12` — excluded | — | closed, not selected |
 | Chroma-vs-Flux weight hash equality | — | closed, architecture confirmed / weights unverifiable |

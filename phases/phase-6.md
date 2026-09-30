@@ -1,49 +1,59 @@
-## Phase 6: Specialized and Temporal VAE Adapters
+# Phase 6: Reconstruction Pairs for Every Enabled Family
 
-**Goal:** Add the remaining adapters without guessing their temporal or architecture behavior.
+**Goal:** Make the Phase 5 reconstruct function the cached training dataset: one
+PNG and one manifest row per enabled, locally resolved family per source.
 
-Implementation order:
-
-1. Qwen Image
-2. Wan
-3. Hunyuan
-4. LTX
-5. MiniMax H3 Image
-
-Per-family policy:
-
-| VAE | Preferred path | Fallback path |
-|---|---|---|
-| Qwen Image | Official image reconstruction path | Supported single-frame spatiotemporal path |
-| Wan | Authoritative image-retrained checkpoint | Official single-frame video path |
-| Hunyuan | Authoritative image-retrained checkpoint | Official single-frame video path |
-| LTX | Image-retrained checkpoint | Supported `T=1` encode-decode path |
-| MiniMax H3 Image | Dedicated image checkpoint and authoritative architecture | No guessed loader; remain unresolved until construction metadata is available |
-
-Temporal handling must record:
+**Build:** One loop in `src/image_humanizer/generate_pairs.py`, reached by
+`uv run image-humanizer generate-pairs --output data/processed`, plus
+`load_png` beside `save_png` in `image_io.py`. Family is the outer loop, so one
+VAE serves a whole family. Ids, groups, and splits come from `manifest.jsonl`.
 
 ```text
-checkpoint_variant: image_retrained | video
-reconstruction_method: native_image | supported_single_frame
-temporal_input_frames: 1
-temporal_padding: ...
-output_frame_selection: ...
+for report in validate_registry():               # family outer
+    if not report.ok: print(findings); continue   # disabled or unresolved
+    vae = load_vae(report.resolved)               # Phase 5 loader, one per family
+    for row in manifest:                          # source inner
+        chw = load_png(row.clean_target)           # CHW float32 [0,1]
+        bchw = reconstruct(report.name, chw[None], model=vae)  # BCHW in, BCHW out
+        save_png(bchw[0], groups/<source_id>/<family>.png)     # batch dropped
+        append(row, family=report.name, reconstruction_sha256=file_sha256(bchw[0]))
+    del vae; empty_cache()
+
+# one row per pair: group_id, source_id, split, family, clean_target, reconstruction, reconstruction_sha256
 ```
 
-For single-frame paths:
+**Rules:**
 
-- Add `T=1` in the dimension expected by the model.
-- Follow documented temporal padding or causal behavior.
-- Decode using the corresponding supported path.
-- Extract the documented output frame.
-- Assert no unexplained temporal duplication or frame shift.
+- Ranks: `load_png` returns CHW `float32` `[0,1]`, the rank `save_png` writes;
+  `reconstruct` is BCHW. Phase 6 adds the batch dimension before the call and
+  drops it before `save_png`, and nothing else touches C, H, W, dtype, or range.
+- Reuse the Phase 5 `reconstruct`, extended by one argument, `model=`, so one
+  `load_vae(report.resolved)` serves a whole family: float32 `[0,1]` in,
+  identical geometry out, no tiling, no denoiser latent scaling, no posterior
+  sampling, no new layer, adapter base class, handler registry, or 2nd path.
+- Family differences are two branches on `Resolved`, never a hierarchy:
+  `native_image` is the plain path; `supported_single_frame` adds `T=1` plus
+  documented padding and frame selection; an unexported `_class_name` maps to
+  the registry `adapter` name, metadata, not an import path.
+- Disabled or unresolved families are printed and skipped — `minimax_h3_image`
+  is disabled, and anything `resolve()` finds findings for is skipped with that
+  text. Nothing is downloaded, substituted, or approximated.
+- One VAE resident at a time: `del` plus `empty_cache()` after each family.
+- The manifest is appended, never rewritten, and `clean_target` stays the
+  source row's existing path: a family whose PNG already exists is neither
+  regenerated nor re-appended — one row per (`source_id`, `family`).
 
-**Tests:**
+**Out of scope:** contact sheets, per-group `metadata.json`, atomic group
+publishing, a resume engine, dataset identity/versioning, fallback tables.
 
-- Temporal dimension placement.
-- Frame count before and after decode.
-- Determinism.
-- Image-retrained versus single-frame provenance.
-- Correct spatial and temporal compression constraints.
+**Tests** (`tests/test_generate_pairs.py` — the acceptance check):
 
-**Exit criterion:** Each adapter is verified against a named checkpoint, or explicitly remains unsupported with an actionable validation error. No architecture is inferred from an arbitrary weight file.
+- One fixture source and a hand-written source row in a temporary tree;
+  `model=` is ignored by a one-line fake, so no weights are needed.
+- After one run: the PNG matches what was reconstructed, and the manifest
+  gained exactly one row with those seven fields, same `group_id` and `split`.
+- A second run adds no row and leaves the source row unchanged; a disabled and
+  an unresolved family add no file and no row, only a line naming why.
+
+**Done:** one reconstruction per enabled resolved family per source, and a
+manifest that is append-only and duplicate-free.

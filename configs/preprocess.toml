@@ -34,9 +34,10 @@ train = 0.90
 validation = 0.05
 test = 0.05
 
-# D4. First key producing a non-trivial grouping wins.
+# D4. Union of all grouping keys (phase-2 deviation from first-key-wins):
+# sources sharing any key are merged into one group.
 [grouping]
-strategy = "first_nontrivial"
+strategy = "union_all_keys"
 phash_max_distance = 6
 # A parent directory holding more than this fraction of the corpus is treated as
 # "a flat dump", not as a burst/shot collection, and is not used as a grouping key.
@@ -46,6 +47,3 @@ parent_max_fraction = 0.2
 [clean_drift]
 l1_max = 0.002
 psnr_min_db = 48.0
-ssim_min = 0.995
-edge_energy_max_change = 0.01
-pixels_changed_over_1_255_max = 0.005

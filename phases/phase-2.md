@@ -8,49 +8,55 @@ imports `diffusers`).
 
 | File | Contents |
 |---|---|
-| `src/image_humanizer/image_io.py` | `canonicalize()` (D2 then D3, once each), `compute_phash()`, `load_canon_config()`, `save_png()`. |
-| `src/image_humanizer/dataset.py` | D4 union-find grouping, deterministic split assignment, `freeze_splits()`. |
+| `src/image_humanizer/image_io.py` | `canonicalize()` (one decode, then D2 then D3 exactly once each), `compute_phash()`, `load_canon_config()`, `save_png()`. |
+| `src/image_humanizer/dataset.py` | D4 `union_all_keys` grouping, deterministic split assignment, `freeze_splits()`. |
 | `src/image_humanizer/cli.py` | `uv run image-humanizer preprocess`. |
-| `tests/test_pipeline.py` | 26 tests: EXIF (all 8 orientations), ICC, alpha, CMYK, crop determinism, source_id, duplicate collapse, near-duplicate grouping, split stability, freeze refusal, end-to-end. |
-| `configs/preprocess.toml` | Added `grouping.parent_max_fraction`. |
+| `tests/test_pipeline.py` | EXIF (all 8 orientations), ICC, alpha and palette transparency, high-bit refusal, CMYK refusal, crop determinism, `source_id`, duplicate collapse, near-duplicate grouping, split stability, freeze refusal, end-to-end CLI. |
+| `configs/preprocess.toml` | `grouping.strategy = "union_all_keys"`, `grouping.parent_max_fraction`. |
 
-`data/processed/` layout follows Phase 7 so nothing moves later:
+`data/processed/` layout follows Phase 6 so nothing moves later:
 `dataset.json`, `manifest.jsonl`, `splits.json`, `groups/<source_id>/original.png`.
+One `original.png` per source today; Phase 6 adds reconstruction rows sharing
+`group_id`.
 
-### Deviations from the task list, and why
+### Grouping, refusals, and drift
 
-1. **Pixel-identical dedup is free, not a separate pass.** D6 defines
-   `source_id` as a hash of the canonical pixels, so identical pixels *are*
-   identical `source_id`s. The CLI collapses on `source_id` as it decodes rather
-   than running a second comparison pass.
+1. **Grouping is `union_all_keys`.** Sources sharing *any* D4 key — byte hash,
+   pHash within `phash_max_distance`, or a parent directory — merge into one
+   group, so a near-duplicate in a different folder still groups with its
+   parent. Group id is the lexicographically smallest member id, so it never
+   depends on input order.
 
-2. **Grouping is a union of all D4 keys, not "first non-trivial wins".** The plan
-   says first-key-wins; a union is strictly safer (a near-duplicate in a
-   different folder still groups with its parent) and is the same amount of code.
-   Group id is the lexicographically smallest member id, so it never depends on
-   input order.
-
-3. **Parent-directory grouping is capped.** A single flat directory holding the
+2. **Parent-directory grouping is capped.** A single flat directory holding the
    whole corpus is not a burst collection, and using it as a key would put 100%
    of the corpus in one split. `parent_max_fraction = 0.2` skips any parent
-   covering more than 20% of sources. Raise it if real collections are that big.
+   covering more than 20% of sources.
 
-4. **CMYK without an ICC profile is a hard error**, not Pillow's blind
-   `CMYK -> RGB`. A wrong colour conversion would silently poison every clean
-   target derived from it.
+3. **Unsupported sources are refused, not guessed.** CMYK *without* an ICC
+   profile raises, and CMYK carrying a profile LittleCMS cannot build a
+   transform from raises as well — Pillow's blind `CMYK -> RGB` would silently
+   poison every clean target derived from it. High-bit grayscale (`I`, `F`,
+   `I;16`) is refused too, because Pillow's `convert()` would clip it to 8 bits
+   silently. CMYK is only ever converted through a real ICC transform.
 
-5. **`--canon-version` is a required-by-default cross-check** against
-   `preprocess.toml`. A stale config would otherwise produce a corpus whose ids
-   mean nothing.
+4. **Pixel-identical dedup is free.** D6 defines `source_id` as a hash of the
+   canonical pixels, so identical pixels *are* identical `source_id`s. The CLI
+   collapses on `source_id` as it decodes rather than running a second
+   comparison pass.
 
-6. **A changed corpus cannot silently reuse `splits.json`.** Re-running with
-   added or removed sources raises instead of merging. A frozen split is a
-   promise; re-splitting is a deliberate act.
+5. **Corpus and canon-version drift are rejected, never merged.**
+   `--canon-version` must match `preprocess.toml`; a mismatch aborts the run.
+   An existing `splits.json` is authoritative: a differing `canon_version` (which
+   means every `source_id` changed) or any differing `source_to_split`,
+   `group_to_split`, or `parent_to_split` mapping — including a corpus that grew
+   or shrank — raises instead of re-splitting. A frozen split is a promise;
+   re-splitting is a deliberate act.
 
-### Verification beyond the unit tests
+### Verification
 
-60 real JPEGs (varied sizes, two subdirectories) were run through the CLI twice
-into separate output directories:
+The suite covers the above plus a CLI end-to-end run. 60 real JPEGs (varied
+sizes, two subdirectories) were also run through the CLI twice into separate
+output directories:
 
 ```text
 splits identical:   True
@@ -60,11 +66,3 @@ train/val/test:     54 / 3 / 3
 ```
 
 54/3/3 is exactly 90/5/5 of 60 groups. No group crossed a split boundary.
-
-### Carried forward
-
-| Item | Blocks | Note |
-|---|---|---|
-| `manifest.jsonl` gains per-pair rows in Phase 7 | 7 | The Phase 2 row is the `original`; Phase 7 adds ten reconstruction rows sharing `group_id`. |
-| pHash bucketing is O(n²) within a 16-bit band | — | Fine at current scale; BK-tree if a band ever holds thousands of images. |
-| No real near-duplicate corpus available yet | — | Clustering is tested on synthetic near-duplicates only. Worth a run over the real dataset before Phase 7. |

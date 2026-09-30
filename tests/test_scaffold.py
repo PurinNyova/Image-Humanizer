@@ -2,9 +2,24 @@ from pathlib import Path
 
 import pytest
 
-from image_humanizer.cli import VAE_NAMES, load_registry, main
+from image_humanizer.cli import main
+from image_humanizer.vae_registry import load_registry
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+_REGISTRY_TEXT = (REPO_ROOT / "configs" / "vae_registry.toml").read_text(encoding="utf-8")
+# Phase 3 moved VAE_NAMES out of cli.py, so the family list is pinned here instead.
+EXPECTED_FAMILIES = {
+    "qwen_image",
+    "sdxl",
+    "flux",
+    "chroma",
+    "sd15",
+    "sd3",
+    "wan",
+    "hunyuan",
+    "ltx",
+    "minimax_h3_image",
+}
 
 
 def test_package_imports():
@@ -14,8 +29,7 @@ def test_package_imports():
 
 
 def test_registry_covers_every_family():
-    registry = load_registry(REPO_ROOT / "configs" / "vae_registry.toml")
-    assert sorted(registry) == sorted(VAE_NAMES)
+    assert set(load_registry(REPO_ROOT / "configs" / "vae_registry.toml")) == EXPECTED_FAMILIES
 
 
 def test_every_family_names_a_checkpoint_and_source():
@@ -44,7 +58,7 @@ def test_gated_families_are_marked():
 
 
 def test_every_checkpoint_dir_is_documented():
-    for name in VAE_NAMES:
+    for name in EXPECTED_FAMILIES:
         readme = REPO_ROOT / "checkpoints" / "vae" / name / "README.md"
         assert readme.is_file(), name
 
@@ -54,3 +68,19 @@ def test_help_exits_zero(capsys):
         main(["--help"])
     assert exc.value.code == 0
     assert "validate-vaes" in capsys.readouterr().out
+
+
+def test_validate_vaes_rejects_an_unknown_family(capsys):
+    # No structural-only MISSING sweep any more: a name absent from the registry is
+    # an unknown_family finding, and it still fails the command.
+    assert main(["validate-vaes", "--family", "not_a_family"]) == 1
+    assert "unknown_family" in capsys.readouterr().out
+
+
+def test_validate_vaes_fails_when_entry_is_malformed(tmp_path, capsys):
+    # Slice out exactly one entry's required keys: coverage is fine, structure is not.
+    text = _REGISTRY_TEXT.partition("[vae.sdxl]\n")[0] + '[vae.sdxl]\ndirectory = "checkpoints/vae/sdxl"\n'
+    bad = tmp_path / "malformed.toml"
+    bad.write_text(text, encoding="utf-8")
+    assert main(["validate-vaes", "--registry", str(bad)]) == 1
+    assert "missing_field" in capsys.readouterr().out

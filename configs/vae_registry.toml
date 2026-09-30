@@ -176,15 +176,16 @@ enabled = true
 directory = "checkpoints/vae/minimax_h3_image"
 adapter = "diffusers_autoencoder_kl_minimax_h3"
 # Sharded: all three shards plus the index are one logical checkpoint.
-checkpoint = "diffusion_pytorch_model.safetensors"
+# checkpoint names the index (the sentinel HF/diffusers resolve for sharded
+# checkpoints); sha256 is empty because docs verify per-shard hashes only.
+checkpoint = "diffusion_pytorch_model.safetensors.index.json"
 checkpoint_is_sharded = true
 checkpoint_shards = [
     "diffusion_pytorch_model-00001-of-00003.safetensors",
     "diffusion_pytorch_model-00002-of-00003.safetensors",
     "diffusion_pytorch_model-00003-of-00003.safetensors",
-    "diffusion_pytorch_model.safetensors.index.json",
 ]
-sha256 = "72f4c6be84ac0674f27398cde991dd9d719762f3952c4921aa66b2ce542f6374"
+sha256 = ""
 config = "config.json"
 hf_repo = "MiniMaxAI/MiniMax-H3"
 hf_revision = "42ed227ee7df40d41602854ae760620d6eb651fe"

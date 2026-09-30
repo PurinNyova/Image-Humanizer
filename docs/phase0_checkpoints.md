@@ -3,6 +3,13 @@
 Ten VAE families. Every entry names a source repository, a pinned commit SHA
 from the Hugging Face API, the exact file paths, and the architecture class.
 
+**Provenance is record-only.** The repo and revision below are a citation of
+which upstream commit the local bytes should match. `configs/vae_registry.toml`
+carries them as `hf_repo` + `hf_revision` + `hf_subfolder`, and no code path
+reads them: `validate-vaes` resolves local files only, never logs in, and never
+downloads. Placing a family's files in `checkpoints/vae/<family>/` is a manual,
+deliberate operator step.
+
 Provenance of facts below:
 
 - **VERIFIED** — fetched from `huggingface.co/api/models/<repo>` or a
@@ -11,8 +18,18 @@ Provenance of facts below:
   2026-09-30 (`comfy/sd.py`, `comfy/latent_formats.py`).
 - **UNCONFIRMED** — could not verify. Not usable as a pinned decision.
 
-All diffusers classes referenced below exist in the pinned `diffusers==0.40.0`
-and all expose both `enable_tiling` and `enable_slicing` (VERIFIED by import).
+**VERIFIED here does not mean validated locally.** A hash in this document is
+what was read from the Hub on the date above. It becomes *enforced* only when it
+is written into the registry as a non-empty `sha256` (or
+`checkpoint_shard_sha256`, for shards) — the registry field is the only thing
+`validate-vaes` checks. Entries the registry ships with `sha256 = ""` are
+reported **UNVERIFIED** at validation time, deliberately, rather than silently
+passing.
+
+All diffusers classes referenced below exist in the diffusers version resolved
+in `uv.lock` (0.40.0 at the time of writing) and all expose both `enable_tiling`
+and `enable_slicing` (VERIFIED by import). The one exception is load-time
+remapping, not a missing class: see `hunyuan`.
 
 ---
 
@@ -32,7 +49,7 @@ and all expose both `enable_tiling` and `enable_slicing` (VERIFIED by import).
 | License | Apache-2.0 | VERIFIED |
 | Gated | No | VERIFIED |
 
-**Preferred path: `native_image`.** This is a genuinely 2D-capable VAE — it is
+**Reconstruction method: `native_image`.** This is a genuinely 2D-capable VAE — it is
 the image model of the Qwen-Image family and needs no temporal fudging.
 
 > Note: `latents_mean`/`latents_std` here are numerically identical to the Wan
@@ -58,7 +75,7 @@ the image model of the Qwen-Image family and needs no temporal fudging.
 | License | OpenRAIL++ | VERIFIED |
 | Gated | No | VERIFIED |
 
-**Preferred path: `native_image`.** Use the configured `AutoencoderKL`. Do not
+**Reconstruction method: `native_image`.** Use the configured `AutoencoderKL`. Do not
 substitute `madebyollin/sdxl-vae-fp16-fix` — it is a community fp16 cast whose
 `config.json` was hand-edited, and our references run in fp32.
 
@@ -75,7 +92,7 @@ the repo. Do not select it; it is a different file and would need its own hash.
 | Revision | `741f7c3ce8b383c54771c7003378a50191e9efe9` | VERIFIED |
 | Config | `vae/config.json` | **BLOCKED — repo is gated** |
 | Weights | `vae/diffusion_pytorch_model.safetensors` | **BLOCKED — repo is gated** |
-| Weight SHA-256 | — | **not retrievable without auth** |
+| Weight SHA-256 | — | **not recorded — repo is gated. Registry declares `sha256 = ""`, so validation reports the local file UNVERIFIED** |
 | Class | `AutoencoderKL` | COMFYUI + Chroma config (see Chroma, below) |
 | Latent channels | 16 | VERIFIED (via Chroma's copy of this config) |
 | Spatial / temporal | 8 / n/a | COMFYUI |
@@ -91,8 +108,12 @@ declares `_name_or_path: "/home/ubuntu/FLUX.1-schnell"` with
 `scaling_factor: 0.3611` and `shift_factor: 0.1159` — see `chroma` below.
 
 **Consequence:** the pinned revision and file path are known, but the content
-hash is not. Acceptance requires `huggingface_hub login` before
-`uv run image-humanizer validate-vaes` can pass for this family.
+hash is not, so the registry ships `sha256 = ""` for this family. That is the
+designed state, not a failure: once the operator has fetched the gated weights
+by hand at the pinned revision, `validate-vaes` resolves the entry and reports
+the weight file **UNVERIFIED** in a deferred note. Writing the true LFS hash into
+`configs/vae_registry.toml` is what makes it enforced. Validation itself never
+authenticates and never fetches.
 
 ---
 
@@ -164,7 +185,7 @@ safetensors file is accepted.
 | Revision | `ea42f8cef0f178587cf766dc8129abd379c90671` | VERIFIED |
 | Config | `vae/config.json` | VERIFIED (file is listed) |
 | Weights | `vae/diffusion_pytorch_model.safetensors` | VERIFIED (file is listed) |
-| Weight SHA-256 | — | **not retrievable — repo is gated** |
+| Weight SHA-256 | — | **not recorded — repo is gated. Registry declares `sha256 = ""`, so validation reports the local file UNVERIFIED** |
 | Class | `AutoencoderKL` | COMFYUI (`AutoencoderKL` path; `latent_channels 16`) |
 | Latent channels | 16 | COMFYUI |
 | Spatial / temporal | 8 / n/a | COMFYUI |
@@ -182,6 +203,12 @@ recorded because it is an easy and silent mistake.
 Both `.safetensors` and `.safetensors.fp16.safetensors` exist; the tree listing
 shows the same `oid` for both, i.e. they are the same content in different
 containers. Use the plain one.
+
+**Access, not tooling.** Because the repo is gated, the weight hash is not
+recorded and the registry ships `sha256 = ""`. The operator accepts the SD3 terms
+and places the files in `checkpoints/vae/sd3/` by hand; validation then resolves
+the entry and reports the weight **UNVERIFIED** rather than failing it, and logs
+in to nothing.
 
 Licensing note: the SD3 weights are **non-commercial**. This constrains any
 redistribution of a trained dewatermarker whose dataset derives from them.
@@ -235,7 +262,7 @@ interface in the ordinary way, so it does **not** satisfy the Phase 4 external
 contract without a documented colour transform we have not verified.
 **Not selected.** Recorded so Phase 6 does not treat it as an equivalent swap.
 
-**Preferred path for `wan`: `supported_single_frame`.** No authoritative
+**Reconstruction method for `wan`: `supported_single_frame`.** No authoritative
 image-retrained Wan VAE exists; every Wan VAE published by Wan-AI is the video
 model. (UNCONFIRMED-negative: I searched Wan-AI's full model list, 30+ repos,
 and found no image-only VAE release.)
@@ -261,16 +288,19 @@ and found no image-only VAE release.)
 
 **Three traps, all recorded:**
 
-1. The weights are `.pt`, **not safetensors**. The Phase 1 checkpoint README
-   rule and the Phase 3 registry selection logic both assume `.safetensors`.
-   This entry needs an explicit weight filename; auto-discovery will not find it.
+1. The weights are `.pt`, **not safetensors** (VERIFIED above). The Phase 1
+   scaffold assumed `.safetensors` in the checkpoint README rule and in registry
+   selection, so a `.pt`-only checkpoint could not be picked up by auto-discovery.
+   Resolved since: the registry now names `pytorch_model.pt` explicitly, which
+   takes precedence over the `.safetensors` auto-discovery fallback;
+   `checkpoints/vae/hunyuan/README.md` records the same.
 2. The config declares the **deprecated** class `AutoencoderKLCausal3D`
    (`_diffusers_version 0.4.2`). diffusers 0.40.0 does not export that name;
    loading requires mapping it to `AutoencoderKLHunyuanVideo`.
 3. The VAE lives under a **resolution-coded subfolder**
    (`hunyuan-video-t2v-720p/`). The repo root has no `vae/`.
 
-**Preferred path: `supported_single_frame`.** No authoritative image-retrained
+**Reconstruction method: `supported_single_frame`.** No authoritative image-retrained
 Hunyuan VAE found. Note `tencent/HunyuanImage-3.0` exists and is a different,
 image-native model with its own architecture, but its repo ships **no `vae/`
 directory** — the VAE is embedded in the transformer. It is therefore not a
@@ -296,7 +326,7 @@ on "main"`.)
 | License | LTX-Video Open Weights License 0.X | VERIFIED |
 | Gated | No | VERIFIED |
 
-**Preferred path: `supported_single_frame`.** No authoritative image-retrained
+**Reconstruction method: `supported_single_frame`.** No authoritative image-retrained
 LTX VAE was found; Lightricks publishes video VAEs only. The
 `encoder_causal / decoder_causal` asymmetry means the single-frame path is the
 *only* asymmetry-free option at `T=1` — ComfyUI explicitly works around a
@@ -319,7 +349,7 @@ architecture. Pinned to LTX-Video; revisit only deliberately.
 | Revision | `42ed227ee7df40d41602854ae760620d6eb651fe` | VERIFIED |
 | Config | `vae/config.json` | VERIFIED |
 | Weights | `vae/diffusion_pytorch_model-00001/2/3-of-00003.safetensors` + `vae/diffusion_pytorch_model.safetensors.index.json` | VERIFIED |
-| Weight SHA-256 (LFS) | shard 1 `72f4c6be84ac0674f27398cde991dd9d719762f3952c4921aa66b2ce542f6374`<br>shard 2 `2e05e8bc23fa4071043e17fd242be8acd0685e781a43987432b2eae925be4198`<br>shard 3 `c05d6ac4b1a33de372799d708531da6320f6a3ce6d1ce6d895e770988e004a39` | VERIFIED |
+| Weight SHA-256 (LFS) | shard 1 `72f4c6be84ac0674f27398cde991dd9d719762f3952c4921aa66b2ce542f6374`<br>shard 2 `2e05e8bc23fa4071043e17fd242be8acd0685e781a43987432b2eae925be4198`<br>shard 3 `c05d6ac4b1a33de372799d708531da6320f6a3ce6d1ce6d895e770988e004a39` | VERIFIED (read from the Hub; **not enforced — see below**) |
 | Class | `AutoencoderKLMiniMaxH3` | VERIFIED |
 | Latent channels | 24 | VERIFIED |
 | Spatial / temporal | 16 / 4 | VERIFIED (`spatial_downsample_factors [2,2,2,2,1,1]`, `temporal_downsample_factors [1,2,2,1,1,1]`) |
@@ -342,12 +372,24 @@ loader. What is true instead:
 - **`clip_length: 17` is a hard constraint.** The VAE is trained on 17-frame
   clips (1 + 4×4). Feeding `T=1` is outside the documented regime. Unlike Wan,
   Hunyuan, and LTX, this family has **no verified single-frame path**.
-- Weights are **sharded** (3 shards + index). All four files are required.
-  Registry selection must treat this as one logical checkpoint.
+- Weights are **sharded** (3 shards + index). All four files are required, and
+  the registry treats them as one logical checkpoint: `checkpoint` names the
+  index, `checkpoint_shards` names the three shards, and the index's
+  `weight_map` must resolve to exactly that set.
+- **The three shard hashes above are not enforced.** They are recorded here as
+  Hub-read facts, but the registry declares no `checkpoint_shard_sha256` and
+  leaves `sha256 = ""`, so nothing compares a shard against them — the files
+  would land in the UNVERIFIED list. Recording them per shard is the change that
+  makes them enforced, and it matters more here than for a single-file
+  checkpoint, where a partial or swapped download is much easier to spot.
+- This entry is `enabled = false`, so resolution short-circuits to the
+  `unsupported` finding before any file or hash is examined at all. Both points
+  above are what will apply on the day it is enabled.
 
-**Decision: `minimax_h3_image` is resolved as a named checkpoint but remains
-`UNSUPPORTED` for reference generation until the `T=1` behavior is verified
-against a real clip.** It must fail loudly in `validate-vaes`, not guess.
+**Decision: `minimax_h3_image` is registered and named but disabled —
+`enabled = false` — and remains unsupported for reference generation until the
+`T=1` behavior is verified against a real clip.** It must fail loudly in
+`validate-vaes`, not guess.
 
 ---
 
@@ -357,19 +399,26 @@ against a real clip.** It must fail loudly in `validate-vaes`, not guess.
 |---|---|---|---|---|---|---|---|---|
 | qwen_image | `Qwen/Qwen-Image` | `75e0b4be` | `AutoencoderKLQwenImage` | 16 | 8/4 | Apache-2.0 | no | Ready |
 | sdxl | `stabilityai/stable-diffusion-xl-base-1.0` | `46216598` | `AutoencoderKL` | 4 | 8/— | OpenRAIL++ | no | Ready |
-| flux | `black-forest-labs/FLUX.1-schnell` | `741f7c3c` | `AutoencoderKL` | 16 | 8/— | Apache-2.0 | **yes** | Needs auth |
+| flux | `black-forest-labs/FLUX.1-schnell` | `741f7c3c` | `AutoencoderKL` | 16 | 8/— | Apache-2.0 | **yes** | Gated, manual fetch; hash UNVERIFIED |
 | chroma | `lodestones/Chroma1-HD` | `0e0c60ec` | `AutoencoderKL` | 16 | 8/— | Apache-2.0 | no | Ready |
 | sd15 | `stabilityai/sd-vae-ft-ema` | `f04b2c4b` | `AutoencoderKL` | 4 | 8/— | MIT | no | Ready |
-| sd3 | `stabilityai/stable-diffusion-3-medium-diffusers` | `ea42f8ce` | `AutoencoderKL` | 16 | 8/— | Non-Commercial | **yes** | Needs auth |
+| sd3 | `stabilityai/stable-diffusion-3-medium-diffusers` | `ea42f8ce` | `AutoencoderKL` | 16 | 8/— | Non-Commercial | **yes** | Gated, manual fetch; hash UNVERIFIED |
 | wan | `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` | `0fad780a` | `AutoencoderKLWan` | 16 | 8/4 | Apache-2.0 | no | Ready |
 | hunyuan | `tencent/HunyuanVideo` | `6204ad6a` | `AutoencoderKLHunyuanVideo` | 16 | 32/4 | Tencent | no | Ready, needs remap |
 | ltx | `Lightricks/LTX-Video` | `8984fa25` | `AutoencoderKLLTXVideo` | 128 | 32/8 | LTX OW 0.X | no | Ready |
-| minimax_h3_image | `MiniMaxAI/MiniMax-H3` | `42ed227e` | `AutoencoderKLMiniMaxH3` | 24 | 16/4 | H3 Community | no | Resolved, unsupported |
+| minimax_h3_image | `MiniMaxAI/MiniMax-H3` | `42ed227e` | `AutoencoderKLMiniMaxH3` | 24 | 16/4 | H3 Community | no | Registered, `enabled = false`; shard hashes unenforced |
 
-**Exit criterion status: MET**, with two caveats that are stated rather than
-hidden — `flux` and `sd3` are gated and need an HF token before their weights
-can be hashed, and `minimax_h3_image` is deliberately `UNSUPPORTED` for
-generation pending `T=1` verification.
+"Ready" means the registry entry is complete and its weight hash is declared, so
+a local file is checked against a pinned value. It says nothing about whether the
+file is on this disk — today none are, and every enabled family reports
+`missing_checkpoint`.
+
+**Exit criterion status: MET**, with the gaps stated rather than hidden. `flux`
+and `sd3` are gated, so the operator fetches them manually at the pinned revision
+and their registry `sha256` is empty: validation reports those files UNVERIFIED
+and never authenticates to fix it. `minimax_h3_image` is registered and named but
+`enabled = false`, and MiniMax H3's three shard hashes are recorded above without
+being declared in the registry, so they are not enforced either.
 
 Every VAE has a named candidate checkpoint and a documented construction
 source. No entry relies on an anonymous `.safetensors`.
