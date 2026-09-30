@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# checkpoint binaries and run artifacts
+checkpoints/vae/*/*
+checkpoints/dewatermarker/*
+!checkpoints/vae/*/README.md
+!checkpoints/dewatermarker/README.md
+
+# generated data and runs
+data/
+runs/
+*.log

@@ -1,0 +1,51 @@
+# Phase 0 decisions. See docs/phase0_decisions.md D1-D4, D6, D8.
+canon_version = "1"
+
+# D1. 512 is a common multiple of 8, 16 and 32, so every spatial_multiple in
+# vae_registry.toml divides it exactly and one tensor feeds all ten adapters.
+resolution = 512
+
+# D2. Applied in order, exactly once per source.
+exif_orientation = true
+color_space = "sRGB"
+assume_srgb_without_icc = true
+alpha_background = [1.0, 1.0, 1.0]
+value_range = [0.0, 1.0]
+dtype = "float32"
+
+# D3. One resize, one crop, before any VAE. Lanczos over bicubic: bicubic ringing
+# is itself a high-frequency artifact and would contaminate the signal.
+resize_filter = "lanczos"
+resize_shorter_side = 512
+crop = "center"
+crop_size = 512
+skip_resize_if_square = true
+
+# D5. The dataset is the measurement. fp16 encode-decode would inject
+# quantization error indistinguishable from VAE reconstruction error.
+generation_dtype = "float32"
+allow_tiling = false
+
+# D6. Content-derived, not path-derived.
+source_id_from = "canonicalized_pixels"
+
+[splits]
+train = 0.90
+validation = 0.05
+test = 0.05
+
+# D4. First key producing a non-trivial grouping wins.
+[grouping]
+strategy = "first_nontrivial"
+phash_max_distance = 6
+# A parent directory holding more than this fraction of the corpus is treated as
+# "a flat dump", not as a burst/shot collection, and is not used as a grouping key.
+parent_max_fraction = 0.2
+
+# D8. Selection gate. Every limit holds for every VAE family.
+[clean_drift]
+l1_max = 0.002
+psnr_min_db = 48.0
+ssim_min = 0.995
+edge_energy_max_change = 0.01
+pixels_changed_over_1_255_max = 0.005

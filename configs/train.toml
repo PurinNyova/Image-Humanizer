@@ -1,0 +1,10 @@
+# Baseline training settings. Phase 10 fills in the full schedule.
+
+[model]
+base_width = 64
+channel_multipliers = [1, 2, 4, 8]
+
+[optim]
+lr = 1e-4
+batch_size = 8
+grad_clip = 1.0

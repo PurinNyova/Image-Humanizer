@@ -1,0 +1,200 @@
+# Phase 0 decisions. See docs/phase0_decisions.md and docs/phase0_checkpoints.md.
+# Revisions are Hugging Face commit SHAs; change them deliberately only.
+
+[vae.qwen_image]
+directory = "checkpoints/vae/qwen_image"
+adapter = "diffusers_autoencoder_kl_qwen_image"
+checkpoint = "diffusion_pytorch_model.safetensors"
+config = "config.json"
+hf_repo = "Qwen/Qwen-Image"
+hf_revision = "75e0b4be04f60ec59a75f475837eced720f823b6"
+hf_subfolder = "vae"
+sha256 = "0c8bc8b758c649abef9ea407b95408389a3b2f610d0d10fcb054fe171d0a8344"
+latent_channels = 16
+spatial_multiple = 8
+temporal = false
+reconstruction_method = "native_image"
+license = "Apache-2.0"
+gated = false
+enabled = true
+
+[vae.sdxl]
+directory = "checkpoints/vae/sdxl"
+adapter = "diffusers_autoencoder_kl"
+checkpoint = "diffusion_pytorch_model.safetensors"
+config = "config.json"
+hf_repo = "stabilityai/stable-diffusion-xl-base-1.0"
+hf_revision = "462165984030d82259a11f4367a4eed129e94a7b"
+hf_subfolder = "vae"
+sha256 = "1598f3d24932bcfe6634e8b618ea1e30ab1d57f5aad13a6d2de446d2199f2341"
+latent_channels = 4
+spatial_multiple = 8
+temporal = false
+reconstruction_method = "native_image"
+license = "OpenRAIL++"
+gated = false
+enabled = true
+
+[vae.flux]
+directory = "checkpoints/vae/flux"
+adapter = "diffusers_autoencoder_kl"
+checkpoint = "diffusion_pytorch_model.safetensors"
+config = "config.json"
+hf_repo = "black-forest-labs/FLUX.1-schnell"
+hf_revision = "741f7c3ce8b383c54771c7003378a50191e9efe9"
+hf_subfolder = "vae"
+sha256 = ""
+latent_channels = 16
+spatial_multiple = 8
+temporal = false
+reconstruction_method = "native_image"
+license = "Apache-2.0"
+gated = true
+enabled = true
+
+[vae.chroma]
+directory = "checkpoints/vae/chroma"
+adapter = "diffusers_autoencoder_kl"
+checkpoint = "diffusion_pytorch_model.safetensors"
+config = "config.json"
+hf_repo = "lodestones/Chroma1-HD"
+hf_revision = "0e0c60ece1e82b17cb7f77342d765ba5024c40c0"
+hf_subfolder = "vae"
+sha256 = "f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3"
+latent_channels = 16
+spatial_multiple = 8
+temporal = false
+reconstruction_method = "native_image"
+license = "Apache-2.0"
+gated = false
+# Architecture confirmed identical to Flux (_name_or_path FLUX.1-schnell,
+# same block_out_channels/latent_channels/scaling_factor/shift_factor).
+# Weight-file equality with Flux is UNVERIFIED: Flux is gated.
+flux_architecture_equivalent = true
+enabled = true
+
+[vae.sd15]
+directory = "checkpoints/vae/sd15"
+adapter = "diffusers_autoencoder_kl"
+checkpoint = "diffusion_pytorch_model.safetensors"
+config = "config.json"
+hf_repo = "stabilityai/sd-vae-ft-ema"
+hf_revision = "f04b2c4b98319346dad8c65879f680b1997b204a"
+hf_subfolder = ""
+sha256 = "32db726da04f06c1b6b14c0043ce115cc87a501482945c5add89a40d838fcb46"
+latent_channels = 4
+spatial_multiple = 8
+temporal = false
+reconstruction_method = "native_image"
+license = "MIT"
+gated = false
+# config.json has NO scaling_factor. 0.18215 is a denoiser convention and must
+# NOT be applied during direct reconstruction.
+denoiser_scale_factor = 0.18215
+enabled = true
+
+[vae.sd3]
+directory = "checkpoints/vae/sd3"
+adapter = "diffusers_autoencoder_kl"
+checkpoint = "diffusion_pytorch_model.safetensors"
+config = "config.json"
+hf_repo = "stabilityai/stable-diffusion-3-medium-diffusers"
+hf_revision = "ea42f8cef0f178587cf766dc8129abd379c90671"
+hf_subfolder = "vae"
+sha256 = ""
+latent_channels = 16
+spatial_multiple = 8
+temporal = false
+reconstruction_method = "native_image"
+license = "Stability Non-Commercial Research Community"
+gated = true
+enabled = true
+
+[vae.wan]
+directory = "checkpoints/vae/wan"
+adapter = "diffusers_autoencoder_kl_wan"
+checkpoint = "diffusion_pytorch_model.safetensors"
+config = "config.json"
+hf_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+hf_revision = "0fad780a534b6463e45facd96134c9f345acfa5b"
+hf_subfolder = "vae"
+sha256 = "d6e524b3fffede1787a74e81b30976dce5400c4439ba64222168e607ed19e793"
+latent_channels = 16
+spatial_multiple = 8
+temporal_compression = 4
+temporal = true
+reconstruction_method = "supported_single_frame"
+license = "Apache-2.0"
+gated = false
+# NOT Wan2.2-TI2V-5B: that VAE has in_channels/out_channels = 12 (YUV-like
+# intermediate), z_dim 48, spatial 16. Not the RGB contract Phase 4 requires.
+enabled = true
+
+[vae.hunyuan]
+directory = "checkpoints/vae/hunyuan"
+adapter = "diffusers_autoencoder_kl_hunyuan_video"
+# NOT safetensors. Repo ships .pt only; registry must name it explicitly.
+checkpoint = "pytorch_model.pt"
+config = "config.json"
+hf_repo = "tencent/HunyuanVideo"
+hf_revision = "6204ad6aea1a77ff5aba337c88278bb9500eb37d"
+hf_subfolder = "hunyuan-video-t2v-720p/vae"
+sha256 = "95d1fc707c1421ccd88ea542838ab4c5d45a5babb48205bac9ce0985525f9818"
+latent_channels = 16
+spatial_multiple = 32
+temporal_compression = 4
+temporal = true
+reconstruction_method = "supported_single_frame"
+license = "Tencent custom"
+gated = false
+# config declares the deprecated AutoencoderKLCausal3D, which diffusers 0.40.0
+# does not export. Must be mapped to AutoencoderKLHunyuanVideo at load.
+deprecated_class = "AutoencoderKLCausal3D"
+enabled = true
+
+[vae.ltx]
+directory = "checkpoints/vae/ltx"
+adapter = "diffusers_autoencoder_kl_ltx_video"
+checkpoint = "diffusion_pytorch_model.safetensors"
+config = "config.json"
+hf_repo = "Lightricks/LTX-Video"
+hf_revision = "8984fa25007f376c1a299016d0957a37a2f797bb"
+hf_subfolder = "vae"
+sha256 = "265ca87cb5dff5e37f924286e957324e282fe7710a952a7dafc0df43883e2010"
+latent_channels = 128
+spatial_multiple = 32
+temporal_compression = 8
+temporal = true
+reconstruction_method = "supported_single_frame"
+license = "LTX-Video Open Weights License 0.X"
+gated = false
+encoder_causal = true
+decoder_causal = false
+enabled = true
+
+[vae.minimax_h3_image]
+directory = "checkpoints/vae/minimax_h3_image"
+adapter = "diffusers_autoencoder_kl_minimax_h3"
+# Sharded: all three shards plus the index are one logical checkpoint.
+checkpoint = "diffusion_pytorch_model.safetensors"
+checkpoint_is_sharded = true
+checkpoint_shards = [
+    "diffusion_pytorch_model-00001-of-00003.safetensors",
+    "diffusion_pytorch_model-00002-of-00003.safetensors",
+    "diffusion_pytorch_model-00003-of-00003.safetensors",
+    "diffusion_pytorch_model.safetensors.index.json",
+]
+sha256 = "72f4c6be84ac0674f27398cde991dd9d719762f3952c4921aa66b2ce542f6374"
+config = "config.json"
+hf_repo = "MiniMaxAI/MiniMax-H3"
+hf_revision = "42ed227ee7df40d41602854ae760620d6eb651fe"
+hf_subfolder = "vae"
+latent_channels = 24
+spatial_multiple = 16
+temporal_compression = 4
+temporal = true
+reconstruction_method = "unsupported"
+unsupported_reason = "config declares clip_length=17 (trained on 17-frame clips); T=1 is outside the documented regime and no single-frame path is documented"
+license = "MiniMax H3 Community License"
+gated = false
+enabled = false
